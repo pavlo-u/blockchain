@@ -1,12 +1,12 @@
 [package]
-name = "emulate"
+name = "blockchain"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-hex-literal="0.3.4"
+hex-literal="0.3.0"
 sha2="0.9.0"
-queue="0.3.1"
-
+queue="0.3.0"
+num-bigint="0.4.0"
