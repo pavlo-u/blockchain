@@ -1,0 +1,2 @@
+cargo:rustc-env=TYPENUM_BUILD_CONSTS=/home/pavlo/projects/blockchain/local_emulation/target/debug/build/typenum-74f4fd522879e552/out/consts.rs
+cargo:rustc-env=TYPENUM_BUILD_OP=/home/pavlo/projects/blockchain/local_emulation/target/debug/build/typenum-74f4fd522879e552/out/op.rs
