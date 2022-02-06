@@ -1,17 +1,18 @@
+#[path = "../blockchain/blockchain.rs"]
 pub mod blockchain;
+#[path = "../blockchain/server.rs"]
 pub mod server;
-pub mod transaction;
+
 use actix_web::error::PayloadError;
-use blockchain::{block::Block, Blockchain};
+use blockchain::{block::transaction::Transaction, block::Block, Blockchain};
 use server::Node;
-use transaction::Transaction;
 
 use actix_web::{
     client::Client, error, get, web, web::Bytes, App, Error, HttpResponse, HttpServer,
 };
 use futures::StreamExt;
 use rand::Rng;
-use std::collections::{HashSet, LinkedList, VecDeque};
+use std::collections::{HashSet, LinkedList};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -23,11 +24,11 @@ pub async fn blockchain_network(some_path: String) -> Result<(), std::io::Error>
     println!("{:?}", &some_node);
     // println!("{:?}", std::str::from_utf8(&some_node.id.as_slice()).unwrap());
     let addr = addr + &some_path;
-    let forks_state = web::Data::new(Arc::new(Mutex::new(Vec::<LinkedList<Block>>::new())));
+    let mempool = web::Data::new(Arc::new(Mutex::new(Vec::<Transaction>::new())));
+    let forks_state = web::Data::new(Arc::new(Mutex::new(Vec::<Blockchain>::new())));
     let state_server = web::Data::new(Arc::new(Mutex::new(some_node)));
     let state_blnch = web::Data::new(Arc::new(Mutex::new(Blockchain {
         blocks: LinkedList::new(),
-        transactions_queue: VecDeque::new(),
     })));
 
     println!("Starting http server: http://{}/\n", &addr);
@@ -37,11 +38,12 @@ pub async fn blockchain_network(some_path: String) -> Result<(), std::io::Error>
             .app_data(web::Data::clone(&state_blnch))
             .app_data(web::Data::clone(&state_server))
             .app_data(web::Data::clone(&forks_state))
+            .app_data(web::Data::clone(&mempool))
             .service(
                 web::resource("v1/public/transactions/new").route(web::post().to(add_transactions)),
             )
             .service(view_trans)
-            .service(view_by_index)
+            .service(view_block_by_index)
             .service(view_top)
             .service(web::resource("v1/private/node/change").route(web::post().to(change_config)))
             .service(first_page)
@@ -49,44 +51,24 @@ pub async fn blockchain_network(some_path: String) -> Result<(), std::io::Error>
             .service(get_blockchain)
             .service(genesis_generate)
             .service(web::resource("v1/private/blocks/new").route(web::post().to(add_block)))
-            .service(web::resource("v1/private/node/new").route(web::post().to(new_node)))
+            .service(new_node)
             .service(node_config)
             .service(start_working)
             .service(nodes_watch)
-            .service(consensus)
+            //.service(consensus)
     })
     .bind(addr)
     .expect("Check bind path!")
     .run()
-    .await
+    .await?;
+
+    Ok(())
 }
-
-#[get("/v1/")]
-async fn nodes_watch(
-    _some_blockch: web::Data<Arc<Mutex<Blockchain>>>,
-    _some_node: web::Data<Arc<Mutex<Node>>>,
-) -> Result<HttpResponse, Error> {
-    println!("Start work! {}{}",_some_node.lock().unwrap().addr.clone(), _some_node.lock().unwrap().port.clone());
-    let http = String::from("http://");
-
-    let mut rng = rand::thread_rng();
-    let rand_num: u64 = rng.gen();
-    let t_block_mint = Duration::new(rand_num % 3 + 1, 0);
-    println!("{:?}", t_block_mint);
-    if _some_blockch
-        .lock()
-        .expect("Can`t check genesis")
-        .blocks
-        .len()
-        == 0
-    {
-        for node in &_some_node
-            .lock()
-            .expect("Can`t send mint block!")
-            .config_list
-        {
+async fn genesis_check(some_config: &HashSet<String>, len_blnch: usize) {
+    if len_blnch == 0 {
+        for node in some_config {
             match Client::new()
-                .get(http.clone() + node + "/v1/private/genesis/")
+                .get(String::from("http://") + node + "/v1/private/genesis/")
                 .send()
                 .await
             {
@@ -97,58 +79,124 @@ async fn nodes_watch(
                 Err(e) => println!("Something wrong! Error {:?}", e),
             }
         }
+    } else {
+        println!("Genesis exist!");
     }
+}
+#[get("/v1/")]
+async fn nodes_watch(
+    some_blockch: web::Data<Arc<Mutex<Blockchain>>>,
+    some_node: web::Data<Arc<Mutex<Node>>>,
+    some_mempool: web::Data<Arc<Mutex<Vec<Transaction>>>>,
+    some_forks: web::Data<Arc<Mutex<Vec<Blockchain>>>>,
+) -> Result<HttpResponse, Error> {
+    println!("Start work! ");
+
+    let mut rng = rand::thread_rng();
+    let rand_num: usize = rng.gen();
+    let some_rand_num: usize = rand_num % 5 + 1; //mint time
+    let t_block_mint = Duration::new(some_rand_num as u64, 0);
+    println!("{:?}", t_block_mint);
+    let len_blnch = some_blockch
+        .lock()
+        .expect("Can`t check genesis")
+        .blocks
+        .len();
+    let some_config = some_node
+        .lock()
+        .expect("Can`t send mint block!")
+        .config_list
+        .clone();
+
+    genesis_check(&some_config, len_blnch).await;
+
     loop {
         async_std::task::sleep(t_block_mint).await;
-        _some_blockch.lock().expect("Can`t mint!").mint();
-        println!("{:?}", _some_blockch.lock().unwrap());
-        for node in &_some_node
+
+        let mut tr_count = some_mempool
             .lock()
-            .expect("Can`t send mint block!")
-            .config_list
-        {
-            let url = http.clone() + &node + "/v1/private/blocks/new";
-            let block = _some_blockch
+            .expect("Can`t get transactions count")
+            .len();
+        if tr_count > some_rand_num {
+            tr_count = some_rand_num; //transaction count = mint time
+        }
+        let mempool_part: Vec<Transaction> = some_mempool
+            .lock()
+            .expect("Can`t get mempool!")
+            .drain(..tr_count)
+            .collect();
+        let number_of_forks = some_forks.lock().expect("Can`t get number of forks!").len();
+        //no forks
+        if number_of_forks == 0 {
+            some_blockch.lock().expect("Can`t mint!").mint(mempool_part);
+            let block = some_blockch
                 .lock()
                 .expect("Can`t get mint block!")
                 .blocks
                 .back()
                 .expect("Can`t get mint block! Block does not exist!")
                 .clone();
-            actix_web::rt::spawn(async move {
-                match Client::new().post(url).send_json(&block.clone()).await {
-                    Ok(_) => println!("Sending was successful! {:?}", std::thread::current()),
-                    Err(e) => println!("Sending wasn`t successful! Error:\n{:?}", e),
-                };
-            });
+            send_block(&some_config, block).await;
+        } else {
+            //with forks
+            let rand_fork: usize = rng.gen();
+            let rand_fork: usize = rand_fork % number_of_forks;
+            //get random fork (blockchain)
+            let mut rand_fork: Blockchain = some_forks
+                .lock()
+                .expect("Can`t mint inside the fork!")
+                .remove(rand_fork);
+            //mint new block
+            rand_fork.mint(mempool_part);
+            //get mint block
+            let block = rand_fork
+                .blocks
+                .back()
+                .expect("Can`t get mint block in the fork! Block does not exist!")
+                .clone();
+            //put random fork back
+            some_forks
+                .lock()
+                .expect("Can`t put the fork back!")
+                .push(rand_fork);
+            //send mint block to other nodes
+            send_block(&some_config, block).await;
         }
     }
 
     //Ok(HttpResponse::Ok().json(format!("My watch has ended!",)))
 }
+
+async fn send_block(some_config: &HashSet<String>, block: Block) {
+    for node in some_config {
+        let url = String::from("http://") + node + "/v1/private/blocks/new";
+        match Client::new().post(url).send_json(&block.clone()).await {
+            Ok(_) => println!("Sending was successful! {:?}", std::thread::current()),
+            Err(e) => println!("Sending wasn`t successful! Error:\n{:?}", e),
+        };
+    }
+}
+
 #[get("/v1/start")]
 async fn start_working(some_node: web::Data<Arc<Mutex<Node>>>) -> Result<HttpResponse, Error> {
     let mut config: HashSet<String> = some_node.lock().expect("Can`t start!").config_list.clone();
-    // config.insert(
-    //     some_node.lock().expect("Can`t start!").addr.clone() 
-    //     + &some_node.lock().expect("Can`t start!").port
-    // );
+    let self_addr = some_node.lock().expect("Can`t start!").addr.clone();
+    let self_full_addr = self_addr + &some_node.lock().expect("Can`t start!").port;
+    config.insert(self_full_addr);
     for node in config {
-        let http = String::from("http://");
-        let url = http + &node + "/v1/";
+        let url = String::from("http://") + &node + "/v1/";
         let client = Client::new();
-        println!("{:?}", std::thread::current());
-        match client.get(url.clone()).send().await {
+        match client.get(url).send().await {
             Ok(_) => println!("{} starts to work!", &node),
-            Err(e) => println!("Start error! URL {}\n{} will not work! Error:\n{:?}",url, &node, e),
+            Err(e) => println!("Start error!\n{} will not work! Error:\n{:?}", &node, e),
         };
     }
-    Client::new().get(String::from("http://") + &some_node.lock().expect("Can`t start!").addr.clone() + &some_node.lock().expect("Can`t start!").port +  "/v1/").send().await;
+    //Client::new().get(String::from("http://") + &some_node.lock().expect("Can`t start!").addr.clone() + &some_node.lock().expect("Can`t start!").port +  "/v1/").send().await;
     Ok(HttpResponse::Ok().json(format!("Yes, my lord!")))
 }
 async fn add_block(
     some_blockch: web::Data<Arc<Mutex<Blockchain>>>,
-    some_forks: web::Data<Arc<Mutex<Vec<LinkedList<Block>>>>>,
+    some_forks: web::Data<Arc<Mutex<Vec<Blockchain>>>>,
     mut payload: web::Payload,
 ) -> Result<HttpResponse, Error> {
     let mut body = web::BytesMut::new();
@@ -161,8 +209,14 @@ async fn add_block(
     }
     let some_block = serde_json::from_slice::<Block>(&body)?;
     //no forks
-    if some_forks.lock().expect("Can`t create fork!").len() == 0 {
-        match some_blockch.lock().expect("Can`t add block!").blocks.back() {
+    let number_of_forks = some_forks.lock().expect("Can`t create fork!").len();
+    if number_of_forks == 0 {
+        let last_block = some_blockch
+            .lock()
+            .expect("Can`t add block!")
+            .blocks
+            .pop_back();
+        match last_block {
             None => {
                 if some_block.previous_hash == String::from("Genesis has no previous hash") {
                     println!("Adding a genesis block!");
@@ -180,6 +234,12 @@ async fn add_block(
             }
             Some(block) => {
                 if block.hash == some_block.previous_hash {
+                    //put back
+                    some_blockch
+                        .lock()
+                        .expect("Can`t put back block!")
+                        .blocks
+                        .push_back(block);
                     //just add a block
                     some_blockch
                         .lock()
@@ -190,103 +250,152 @@ async fn add_block(
                 } else if block.previous_hash == some_block.previous_hash {
                     //create 2 forks
                     println!("\nCreate fork!\n");
-                    let last_valid_block = some_blockch
-                        .lock()
-                        .expect("Can`t create fork!")
-                        .blocks
-                        .pop_back()
-                        .expect("Can`t get add last block to fork chain!");
-                    let mut fork: LinkedList<Block> = LinkedList::new();
-                    fork.push_back(some_block);
+                    let mut fork1: Blockchain = Blockchain {
+                        blocks: LinkedList::new(),
+                    };
+                    fork1.blocks.push_back(some_block);
                     some_forks
                         .lock()
                         .expect("Can`t push block in fork!")
-                        .push(fork);
-                    let mut fork: LinkedList<Block> = LinkedList::new();
-                    fork.push_back(last_valid_block);
+                        .push(fork1);
+                    let mut fork2: Blockchain = Blockchain {
+                        blocks: LinkedList::new(),
+                    };
+                    fork2.blocks.push_back(block);
                     some_forks
                         .lock()
                         .expect("Can`t push last block in fork!")
-                        .push(fork);
+                        .push(fork2);
+                    // println!(
+                    //     "\nBlnch\n{:#?}\n\nForks\n{:#?}\n\n",
+                    //     &some_blockch, &some_forks
+                    // );
                     return Ok(HttpResponse::Ok().json(format!("There has been a network fork!")));
                 } else {
-                    //invalid block
+                    //put back
+                    some_blockch
+                        .lock()
+                        .expect("Can`t put back block!")
+                        .blocks
+                        .push_back(block);
+                    println!(
+                        "\nBlnch\n{:?}\n\nForks\n{:?}\n\nBlock\n{:?}\n",
+                        &some_blockch, &some_forks, &some_block
+                    );
                     println!("Wrong previous hash!");
+                    //invalid block
                     return Err(error::ErrorBadRequest("The hashes don't match!"));
                 }
             }
         }
     } else {
         //with forks
-        for chain in 0..some_forks
-            .lock()
-            .expect("Can't add a some block to the fork")
-            .len()
-        {
-            if some_forks
+        for chain in 0..number_of_forks {
+            let current_fork_last_block = some_forks
                 .lock()
                 .expect("Can't match a block")
                 .get(chain)
                 .expect("Can`t some get fork!")
+                .blocks
                 .back()
                 .expect("Can`t get last block from fork!")
-                .hash
-                == some_block.previous_hash
-            {
+                .clone();
+            if current_fork_last_block.hash == some_block.previous_hash {
                 some_forks
                     .lock()
                     .expect("Can't add a block to the fork")
                     .get_mut(chain)
                     .expect("Can`t get fork!")
+                    .blocks
                     .push_back(some_block);
+                consensus(&some_forks, &some_blockch).await;
                 return Ok(HttpResponse::Ok().json(format!("Adding a block is successful!")));
+            } else if current_fork_last_block.previous_hash == some_block.previous_hash {
+                 //create fork in forks
+                 println!("\nCreate forks  fork!\n");
+                 let mut fork: Blockchain = Blockchain {
+                     blocks: some_forks
+                     .lock()
+                     .expect("Can`t push block in forks fork!")
+                     .get(chain)
+                     .expect("Can`t get fork from vec!")
+                     .blocks
+                     .clone(),
+                 };
+                 fork.blocks.pop_back();
+                 fork.blocks.push_back(some_block);
+                 some_forks
+                     .lock()
+                     .expect("Can`t push fors in vec forks!")
+                     .push(fork);
+                
+                //  println!(
+                //      "\nBlnch\n{:#?}\n\nForks\n{:#?}\n\n",
+                //      &some_blockch, &some_forks
+                //  );
+                 return Ok(HttpResponse::Ok().json(format!("There has been a network fork!")));
             }
         }
+        println!(
+            "\nBlnch\n{:#?}\n\nForks\n{:#?}\n\nBlock with forks\n{:#?}\n\n",
+            &some_blockch, &some_forks, &some_block
+        );
+        println!("Wrong previous hash!!!!!!!!");
+        
+        return Err(error::ErrorBadRequest("The  hashes don't match!!!!!!!!"));
     }
-    Ok(HttpResponse::Ok().json(format!("Adding a block successfully!")))
+    // Ok(HttpResponse::Ok().json(format!("Adding a block successfully!")))
 }
 
-#[get("/v1/private/consensus/")]
+//#[get("/v1/private/consensus/")]
 async fn consensus(
-    some_forks: web::Data<Arc<Mutex<Vec<LinkedList<Block>>>>>,
-    some_blockch: web::Data<Arc<Mutex<Blockchain>>>,
-) -> Result<HttpResponse, Error> {
-    let chain = 3;
-    if some_forks
-        .lock()
-        .expect("Can't add a block to the fork")
-        .get(chain)
-        .expect("Can`t get some fork!")
-        .len()
-        > 5
-    {
-        some_blockch
+    some_forks: &web::Data<Arc<Mutex<Vec<Blockchain>>>>,
+    some_blockch: &web::Data<Arc<Mutex<Blockchain>>>,
+) /*-> Result<HttpResponse, Error>*/ {
+    let chain: usize = 5;
+    let number_of_forks: usize = some_forks.lock().expect("Can't come to consensus!").len();
+    for fork in 0..number_of_forks {
+        if some_forks
             .lock()
-            .expect("Can`t append block!")
+            .expect("Can't add a block to the fork")
+            .get(fork)
+            .expect("Can`t get some fork!")
             .blocks
-            .append(
-                &mut some_forks
-                    .lock()
-                    .expect("Can't get a fork to append!")
-                    .get(chain)
-                    .expect("Can't get a block to append!")
-                    .clone(),
-            );
-        some_forks.lock().expect("Can't clear forks!").clear();
+            .len()
+            > chain
+        {
+            let mut valid_fork: LinkedList<Block> = some_forks
+                .lock()
+                .expect("Can't get a fork to append!")
+                .get(fork)
+                .expect("Can't get a block to append!")
+                .blocks
+                .clone();
+            some_blockch
+                .lock()
+                .expect("Can`t append block!")
+                .blocks
+                .append(&mut valid_fork);
+            some_forks.lock().expect("Can't clear forks!").clear();
+            println!("A consensus has been found!");
+            //println!("Blnch\n{:#?}\nForks\n{:#?}\n", &some_blockch, &some_forks);
+            return;
+         //   return Ok(HttpResponse::Ok().json(format!("A consensus has been found!")));
+        }
     }
-
-    Ok(HttpResponse::Ok().json(format!("Yes, my lord!")))
+  //  Ok(HttpResponse::Ok().json(format!("Not enough blocks in forks!")))
 }
 
 #[get("/v1/private/")]
 async fn get_blockchain(
     some_blockch: web::Data<Arc<Mutex<Blockchain>>>,
+    some_forks: web::Data<Arc<Mutex<Vec<Blockchain>>>>,
 ) -> Result<HttpResponse, Error> {
     let some_blockch = some_blockch.lock().expect("Can`t get blockchain!");
     let some_blockchain = Blockchain {
         blocks: some_blockch.blocks.clone(),
-        transactions_queue: some_blockch.transactions_queue.clone(),
     };
+    println!("Some_forks!\n\n{:#?}\n", some_forks);
     Ok(HttpResponse::Ok().json(some_blockchain))
 }
 
@@ -296,13 +405,12 @@ async fn genesis_generate(
     some_node: web::Data<Arc<Mutex<Node>>>,
 ) -> Result<HttpResponse, Error> {
     //if genesis already exists
-    if some_blockch
+    let chain_len = some_blockch
         .lock()
         .expect("Can`t create genesis!")
         .blocks
-        .len()
-        != 0
-    {
+        .len();
+    if chain_len != 0 {
         Err(error::ErrorBadRequest("Genesis block already exists!"))
     } else {
         let genesis_block = Blockchain::new()
@@ -324,7 +432,7 @@ async fn genesis_generate(
             let client = Client::new();
             match client.post(path).send_json(&genesis_block.clone()).await {
                 Ok(_) => println!("Send genesis to {} successfully", &node),
-                Err(_) => println!("Node {} is not deployed!", &node),
+                Err(e) => println!("Node {} \nError\n{} ", &node, e),
             };
         }
         Ok(HttpResponse::Ok().json(format!(
@@ -333,7 +441,7 @@ async fn genesis_generate(
         )))
     }
 }
-
+#[get("/v1/private/node/new")]
 async fn new_node(
     some_node: web::Data<Arc<Mutex<Node>>>,
     some_blockch: web::Data<Arc<Mutex<Blockchain>>>,
@@ -363,7 +471,6 @@ async fn new_node(
                 //replace current blockchain state with new one
                 let mut some_blockch = some_blockch.lock().expect("Can`t get blockchain!");
                 some_blockch.blocks = blockchain.blocks.clone();
-                some_blockch.transactions_queue = blockchain.transactions_queue.clone();
                 //get the configuration of the other node
                 let some_config_list = client
                     .get(url.clone() + &node + "/v1/public/node/status/config")
@@ -402,6 +509,15 @@ async fn new_node(
                     .lock()
                     .expect("Can`t get current config!")
                     .config_list = some_config;
+                //launching a node 
+               /* * let self_addr =
+                    url.clone() + &some_node.lock().expect("Can`t get current config!").addr;
+                let self_addr =
+                    self_addr + &some_node.lock().expect("Can`t get current config!").port;
+                match client.get(self_addr.clone() + "/v1/").send().await {
+                    Ok(_) => println!("The node {} was launched!", &self_addr),
+                    Err(_) => return Err(error::ErrorBadGateway("The node was not running!")),
+                };*/
                 return Ok(HttpResponse::Ok().json(format!("Node add to network successfully!")));
             }
             println!("Can`t get state from {}!", &node);
@@ -437,13 +553,20 @@ async fn change_config(
 }
 #[get("/v1/public/node/status/config")]
 async fn node_config(some_node: web::Data<Arc<Mutex<Node>>>) -> Result<HttpResponse, Error> {
-    let some_node = some_node.lock().expect("Can`t show status!");
-    Ok(HttpResponse::Ok().json(some_node.config_list.clone()))
+    Ok(HttpResponse::Ok().json(
+        some_node
+            .lock()
+            .expect("Can`t show status!")
+            .config_list
+            .clone(),
+    ))
 }
 #[get("/v1/public/node/status")]
 async fn node_status(some_node: web::Data<Arc<Mutex<Node>>>) -> Result<HttpResponse, Error> {
-    let some_node = some_node.lock().expect("Can`t show status!");
-    Ok(HttpResponse::Ok().json(format!("{:?}", some_node)))
+    Ok(HttpResponse::Ok().json(format!(
+        "{:?}",
+        some_node.lock().expect("Can`t show status!")
+    )))
 }
 
 #[get("/")]
@@ -463,16 +586,14 @@ async fn first_page() -> Result<HttpResponse, Error> {
 async fn view_top(some_blockch: web::Data<Arc<Mutex<Blockchain>>>) -> Result<HttpResponse, Error> {
     let some_blockchain = some_blockch.lock().expect("Can`t get head!");
     Ok(HttpResponse::Ok().json(format!(
-        "Top block is: {:#?} len {} queue {:#?} len {}",
+        "Top block is: {:#?} len {}",
         some_blockchain.blocks.back(),
         some_blockchain.blocks.len(),
-        some_blockchain.transactions_queue,
-        some_blockchain.transactions_queue.len()
     )))
 }
 
 async fn add_transactions(
-    some_blockch: web::Data<Arc<Mutex<Blockchain>>>,
+    some_mempool: web::Data<Arc<Mutex<Vec<Transaction>>>>,
     mut payload: web::Payload,
 ) -> Result<HttpResponse, Error> {
     let mut body = web::BytesMut::new();
@@ -483,28 +604,30 @@ async fn add_transactions(
         }
         body.extend_from_slice(&chunk);
     }
-    let some_tr = serde_json::from_slice::<Transaction>(&body)?;
-    let mut some_blockch = some_blockch.lock().expect("Can`t add transaction!");
-    some_blockch.new_transaction(some_tr.from.clone(), some_tr.to.clone(), some_tr.amount);
-    Ok(HttpResponse::Ok().json(some_tr))
+    let some_tr: Transaction = serde_json::from_slice::<Transaction>(&body)?;
+    some_mempool
+        .lock()
+        .expect("Can`t add transaction!")
+        .push(some_tr);
+    Ok(HttpResponse::Ok().json(format!("The transaction was added successfully!")))
 }
 
 #[get("/v1/public/transactions/:{index}")]
 async fn view_trans(
-    some_blockch: web::Data<Arc<Mutex<Blockchain>>>,
+    some_mempool: web::Data<Arc<Mutex<Vec<Transaction>>>>,
     web::Path(index): web::Path<usize>,
 ) -> Result<HttpResponse, Error> {
-    let some_blockchain = some_blockch.lock().expect("Can`t get transaction!");
+    let some_blockchain = some_mempool.lock().expect("Can`t get transaction!");
     Ok(HttpResponse::Ok().json(format!(
         "Transaction number {} is: {:#?} len {}",
         index,
-        some_blockchain.transactions_queue.get(index),
-        some_blockchain.transactions_queue.len()
+        some_blockchain.get(index),
+        some_blockchain.len()
     )))
 }
 
 #[get("/v1/public/blocks/:{index}")]
-async fn view_by_index(
+async fn view_block_by_index(
     some_blockch: web::Data<Arc<Mutex<Blockchain>>>,
     web::Path(index): web::Path<usize>,
 ) -> Result<HttpResponse, Error> {

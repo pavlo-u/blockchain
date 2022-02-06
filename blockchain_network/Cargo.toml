@@ -1,24 +1,19 @@
 [package]
-name = "blockchain_node"
+name = "blockchain_network"
 version = "0.1.56"
 edition = "2021"
 
 
 [dependencies]
-sha2="0.9.0"
+sha2="0.10.0"
 rand="0.8.0"
 borsh = "0.9.1"
 actix-web = "3.3.3"
 futures = "0.3"
-env_logger = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 json = "0.12"
-actix-service = "1.0.0"
 actix = "0.12.0"
 actix-broker = "0.4.1"
 async-std = "1.10.0"
-openssl = { version = "0.10", features = ["vendored"] }
 awc = "2"
-[dev-dependencies]
-actix-rt = "1"
