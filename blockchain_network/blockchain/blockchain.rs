@@ -8,10 +8,7 @@ use serde::{Deserialize, Serialize};
 use timestamp::current_timestamp;
 
 use rand::Rng;
-use std::clone::Clone;
 use std::collections::LinkedList;
-//
-use std::vec::Vec; //vector of Blockchains
 
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct Blockchain {
@@ -35,19 +32,18 @@ impl Blockchain {
             transaction: transaction_vec,
             hash: header.head_timestamp,
             previous_hash: String::from("Genesis has no previous hash"),
-        }; //create genesis block
+        };
         blocks_list.push_back(genesis);
         Blockchain {
             blocks: blocks_list,
         }
     }
-    pub fn mint(&mut self, mempool_part: Vec<Transaction>) {
+    pub fn mint(&mut self, mempool_part: Vec<Transaction>) -> Block {
         let mut mint_block = Block {
-            //create block
             head: Header::new(),
-            transaction: mempool_part,    //first transaction from the queue
-            hash: String::new(),          //some hash
-            previous_hash: String::new(), //hash of the last element
+            transaction: mempool_part,
+            hash: String::new(),
+            previous_hash: String::new(),
         };
         loop {
             let last_block_hash = self
@@ -58,13 +54,12 @@ impl Blockchain {
                 .clone();
             mint_block.previous_hash = last_block_hash;
             mint_block.head.nonce = rand::thread_rng().gen(); //rand number
-            let tmp_hash = mint_block.hash_func(); //hash with BigInt
-            let v: Vec<&str> = tmp_hash.matches("1").collect(); //count of the 1
-            if v.len() >= 6 {
-                mint_block.hash = tmp_hash; //add hash to block
-                mint_block.head.head_timestamp = current_timestamp(); //
-                self.blocks.push_back(mint_block); //add block to Blockchain(LinkedList)
-                break;
+            let tmp_hash = mint_block.hash_func();
+            let result: Vec<&str> = tmp_hash.matches("1").collect(); //count of the 1
+            if result.len() >= 6 {
+                mint_block.hash = tmp_hash;
+                mint_block.head.head_timestamp = current_timestamp();
+                break mint_block;
             }
         }
     }

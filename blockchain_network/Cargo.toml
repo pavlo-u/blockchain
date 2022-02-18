@@ -17,3 +17,4 @@ actix = "0.12.0"
 actix-broker = "0.4.1"
 async-std = "1.10.0"
 awc = "2"
+openssl = { version = "0.10", features = ["vendored"] }

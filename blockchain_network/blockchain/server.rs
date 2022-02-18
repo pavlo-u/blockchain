@@ -1,25 +1,25 @@
-//#[path = "../blockchain/key.rs"]
-/*pub mod key;
-*/
+#[path = "../blockchain/key.rs"]
+pub mod key;
+
 use std::collections::HashSet;
 
-//use key::key_gen;
+use key::key_gen;
 #[derive(Clone)]
 pub struct Node {
-    // pkey: Vec<u8>,
-    // pub id: Vec<u8>,
+    pkey: Vec<u8>,
+    pub id: Vec<u8>,
     pub addr: String,
     pub port: String,
     pub config_list: HashSet<String>,
 }
 impl Node {
     pub fn new(addr: String, port: String) -> Node {
-        // let key_pair: (Option<Vec<u8>>, Option<Vec<u8>>) = key_gen(port.clone());
+        let key_pair: (Option<Vec<u8>>, Option<Vec<u8>>) = key_gen(port.clone());
         let mut config = Node::load_config().expect("Can`t load config");
         config.remove(&(addr.clone() + &port));
         Node {
-            //    pkey: key_pair.0.expect("Private key error"),
-            //    id: key_pair.1.expect("Public key error"),
+            pkey: key_pair.0.expect("Private key error"),
+            id: key_pair.1.expect("Public key error"),
             addr,
             port,
             config_list: config,
@@ -36,8 +36,8 @@ impl Node {
 }
 impl std::fmt::Debug for Node {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        //  let byte_pub_key = self.id.clone();
-        // let pub_key = std::str::from_utf8(byte_pub_key.as_slice()).unwrap();
+        //let byte_pub_key = self.id.clone();
+        //let pub_key = std::str::from_utf8(byte_pub_key.as_slice()).unwrap();
         write!(
             f,
             "\naddr&port {}{}\nConfig list: {:?}",

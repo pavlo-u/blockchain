@@ -20,9 +20,4 @@ pub fn key_gen(passphrase: String) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
         process::exit(1);
     });
     (Some(pkey), Some(pub_key))
-    //println!("{:?}", std::str::from_utf8(pub_key.as_slice()))
-    // (, std::str::from_utf8(pub_key.as_slice()).unwrap_or_else(|err| {
-    //     println!("Key generation problem: {}", err);
-    //     process::exit(1);
-    // }))
 }
