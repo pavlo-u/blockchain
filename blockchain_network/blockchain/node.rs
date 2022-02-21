@@ -22,7 +22,6 @@ pub async fn blockchain_network(some_path: String) -> Result<(), std::io::Error>
     let some_node = Node::new(addr.clone(), some_path.clone());
 
     println!("{:?}", &some_node);
-    // println!("{:?}", std::str::from_utf8(&some_node.id.as_slice()).unwrap());
     let addr = addr + &some_path;
     let mempool = web::Data::new(Arc::new(Mutex::new(Vec::<Transaction>::new())));
     let forks_state = web::Data::new(Arc::new(Mutex::new(Vec::<Blockchain>::new())));
@@ -53,43 +52,36 @@ pub async fn blockchain_network(some_path: String) -> Result<(), std::io::Error>
             .service(new_node)
             .service(node_config)
             .service(start_working)
-            .service(nodes_watch)
+            .service(main_loop)
     })
-    .workers(2)
     .bind(addr)
     .expect("Check bind path!")
     .run()
     .await
 }
-async fn send_transaction(some_config: &HashSet<String>, some_transaction: Transaction) {
-    for node in some_config {
-        let url: String = String::from("http://") + node + "/v1/public/transactions/new";
-        let transaction: Transaction = some_transaction.clone();
-        let client = Client::new();
-        actix_web::rt::spawn(async move {
-            match client.post(url).send_json(&transaction.clone()).await {
-                Ok(_) => ()/*println!(
-                    "Sending transaction was successful {:?}!",
-                    std::thread::current()
-                )*/,
-                Err(e) => println!(
-                    "Alert! Sending transaction wasn`t successful! Error:\n{:?}",
-                    e
-                ),
-            };
-        });
-    }
-}
 async fn gen_transactions_loop(some_config: HashSet<String>) {
     let mut rng = rand::thread_rng();
     loop {
         async_std::task::sleep(Duration::from_secs(1)).await;
-        let transaction: Transaction = Transaction {
+        let some_transaction: Transaction = Transaction {
             from: rng.gen::<u64>().to_string(),
             to: rng.gen::<u64>().to_string(),
             amount: rng.gen::<u64>(),
         };
-        send_transaction(&some_config, transaction).await;
+        for node in &some_config {
+            let url: String = String::from("http://") + node + "/v1/public/transactions/new";
+            let transaction: Transaction = some_transaction.clone();
+            let client = Client::new();
+            actix_web::rt::spawn(async move {
+                match client.post(url).send_json(&transaction.clone()).await {
+                    Ok(_) => (),
+                    Err(e) => println!(
+                        "Alert! Sending transaction wasn`t successful! Error:\n{:?}",
+                        e
+                    ),
+                };
+            });
+        }
     }
 }
 
@@ -110,7 +102,7 @@ async fn genesis_create(some_config: &HashSet<String>) {
     }
 }
 #[get("/v1/")]
-async fn nodes_watch(
+async fn main_loop(
     some_blockch: web::Data<Arc<Mutex<Blockchain>>>,
     some_node: web::Data<Arc<Mutex<Node>>>,
     some_mempool: web::Data<Arc<Mutex<Vec<Transaction>>>>,
@@ -162,7 +154,7 @@ async fn nodes_watch(
                 let mint_block: Block = some_forks
                     .lock()
                     .expect("Can`t mint inside the fork!")
-                    .get_mut(rand_fork)
+                    .get(rand_fork)
                     .expect("Can`t get fork for mint!")
                     .mint(mempool_part);
                 send_block(&some_config, mint_block).await;
@@ -179,7 +171,7 @@ async fn send_block(some_config: &HashSet<String>, block: Block) {
         let url = String::from("http://") + node + "/v1/private/blocks/new";
         actix_web::rt::spawn(async move {
             match client.post(url).send_json(&some_block.clone()).await {
-                Ok(_) => (), //println!("Sending block was successful! {:?}", std::thread::current()),
+                Ok(_) => (),
                 Err(e) => println!(
                     "Sending block wasn`t successful!\nBlock {:?}\nError:\n{:?}",
                     some_block, e
@@ -196,7 +188,6 @@ async fn start_working(some_node: web::Data<Arc<Mutex<Node>>>) -> Result<HttpRes
     genesis_create(&some_config).await;
     let self_addr = some_node.lock().expect("Can`t start!").addr.clone();
     let self_full_addr = self_addr + &some_node.lock().expect("Can`t start!").port;
-
     some_config.insert(self_full_addr);
     let client = Client::new();
     for node in some_config {
@@ -257,7 +248,6 @@ async fn add_to_blockchain(
     match top_block {
         None => {
             if some_block.previous_hash == String::from("Genesis has no previous hash") {
-                println!("Adding a genesis block!");
                 some_blockch
                     .lock()
                     .expect("Can`t add block!")
@@ -265,12 +255,10 @@ async fn add_to_blockchain(
                     .push_back(some_block);
                 return Ok(HttpResponse::Ok().json(format!("Adding a genesis block successfully!")));
             }
-            println!("gen err");
             return Err(error::ErrorBadRequest("Create a genesis block first!"));
         }
         Some(current_last_block) => {
             if current_last_block.hash == some_block.previous_hash {
-                //println!("Normal Current block {:?}", some_block);
                 some_blockch
                     .lock()
                     .expect("Can`t add block!")
@@ -309,23 +297,20 @@ async fn create_fork(
                     .expect("Can`t lock!")
                     .blocks
                     .append(&mut some_last_blocks);
-                //println!("Fork was not created!");
                 break;
             }
         };
         if block.hash == some_block.previous_hash {
-            let old_fork = some_last_blocks.split_off(counter);
+            let old_fork = some_last_blocks.split_off(counter + 1);
             some_blockch
                 .lock()
                 .expect("Can`t lock for create fork!")
                 .blocks
                 .append(&mut some_last_blocks);
-            //println!("Current fork after split {:?}", old_fork);
             let old_fork_chain = Blockchain { blocks: old_fork };
             let mut new_fork_chain = Blockchain {
                 blocks: LinkedList::new(),
             };
-            //println!("Fork Current block {:?}", some_block);
             new_fork_chain.blocks.push_back(some_block);
             some_forks
                 .lock()
@@ -343,7 +328,6 @@ async fn create_fork(
         .expect("Can`t lock!")
         .blocks
         .append(&mut some_last_blocks);
-    //println!("ERROR! {:?}", some_block);
     return Err(error::ErrorBadRequest("Error! Fork was not created!"));
 }
 async fn add_to_fork(
@@ -366,7 +350,6 @@ async fn add_to_fork(
             None => return Err(error::ErrorBadRequest("No blocks in fork!")),
             Some(last_block) => {
                 if last_block.hash == some_block.previous_hash {
-                    //println!("Add to fork {:?}", some_block);
                     some_forks
                         .lock()
                         .expect("Can't add a block to the fork")
@@ -378,7 +361,6 @@ async fn add_to_fork(
                     return Ok(HttpResponse::Ok().json(format!("Adding a block is successful!")));
                 } else if last_block.previous_hash == some_block.previous_hash {
                     //create fork in forks
-                    //println!("Create forked fork!{:?}", some_block);
                     let mut fork: Blockchain = some_forks
                         .lock()
                         .expect("Can`t push block in forked fork!")
@@ -398,12 +380,11 @@ async fn add_to_fork(
         };
     }
     //else create fork from fork
-    create_forked_fork(&some_forks, /*&some_blockch,*/ some_block).await
+    create_forked_fork(&some_forks, some_block).await
 }
 
 async fn create_forked_fork(
     some_forks: &web::Data<Arc<Mutex<Vec<Blockchain>>>>,
-    //some_blockch: &web::Data<Arc<Mutex<Blockchain>>>,
     some_block: Block,
 ) -> Result<HttpResponse, Error> {
     let number_of_forks: usize = some_forks.lock().expect("Can`t create fork!").len();
@@ -422,8 +403,7 @@ async fn create_forked_fork(
                 Some(current_block) => {
                     if current_block.hash == some_block.previous_hash {
                         //create fork in forks
-                        //println!("Create forks fork!");
-                        current_fork.split_off(iter_block);
+                        current_fork.split_off(iter_block + 1);
                         current_fork.push_back(some_block);
                         let new_fork = Blockchain {
                             blocks: current_fork,
@@ -439,12 +419,6 @@ async fn create_forked_fork(
             };
         }
     }
-    /*println!(
-        "Blch\n{:?}\nBlock\n{:?}",
-        &some_blockch.lock().unwrap().blocks.back(),
-        some_block
-    );
-    println!("No valid previous hash");*/
     Err(error::ErrorBadRequest("The  hashes don't match!!!!!!!!"))
 }
 
@@ -524,7 +498,6 @@ async fn genesis_generate(
         .expect("Can`t send genesis!")
         .config_list
         .clone();
-    println!("Config {:?}", some_config);
     for node in some_config {
         let path: String = String::from("http://") + &node + "/v1/private/blocks/new";
         let client = Client::new();

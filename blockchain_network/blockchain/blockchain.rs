@@ -38,7 +38,7 @@ impl Blockchain {
             blocks: blocks_list,
         }
     }
-    pub fn mint(&mut self, mempool_part: Vec<Transaction>) -> Block {
+    pub fn mint(&self, mempool_part: Vec<Transaction>) -> Block {
         let mut mint_block = Block {
             head: Header::new(),
             transaction: mempool_part,
@@ -53,7 +53,7 @@ impl Blockchain {
                 .hash
                 .clone();
             mint_block.previous_hash = last_block_hash;
-            mint_block.head.nonce = rand::thread_rng().gen(); //rand number
+            mint_block.head.nonce = rand::thread_rng().gen();
             let tmp_hash = mint_block.hash_func();
             let result: Vec<&str> = tmp_hash.matches("1").collect(); //count of the 1
             if result.len() >= 6 {
@@ -67,7 +67,6 @@ impl Blockchain {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
 
     use super::*;
 
@@ -95,8 +94,8 @@ mod tests {
             to: String::from("Test"),
             amount: 0,
         }];
-        std::thread::sleep(Duration::new(1, 412));
-        some_blockch.mint(mempool);
+        let mint_block = some_blockch.mint(mempool);
+        some_blockch.blocks.push_back(mint_block);
         assert_eq!(
             some_blockch
                 .blocks
@@ -109,8 +108,8 @@ mod tests {
             String::from("Mint")
         );
         assert_eq!(some_blockch.blocks.len(), 2);
-        std::thread::sleep(Duration::new(1, 412));
-        some_blockch.mint(vec![]);
+        let mint_block = some_blockch.mint(vec![]);
+        some_blockch.blocks.push_back(mint_block);
         assert!(some_blockch
             .blocks
             .back()
